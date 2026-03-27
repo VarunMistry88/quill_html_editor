@@ -161,6 +161,8 @@ class QuillHtmlEditor extends StatefulWidget {
 class QuillHtmlEditorState extends State<QuillHtmlEditor> {
   /// it is the controller used to access the functions of quill js library
   late WebViewXController _webviewController;
+  bool _isWebViewControllerInitialized = false;
+  String? _pendingHtmlText;
 
   /// this variable is used to set the html code that renders the quill js library
   String _initialContent = "";
@@ -174,14 +176,12 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
   String _quillJsScript = '';
   late Future _loadScripts;
   late String _fontFamily;
-  late String _encodedStyle;
   bool _editorLoaded = false;
   @override
   initState() {
     _loadScripts = rootBundle.loadString(
         'packages/quill_html_editor_v3/assets/scripts/quill_2.0.0_4_min.js');
     _fontFamily = widget.textStyle?.fontFamily ?? 'Roboto';
-    _encodedStyle = Uri.encodeFull(_fontFamily);
     isEnabled = widget.isEnabled;
     _currentHeight = widget.minHeight;
 
@@ -190,7 +190,9 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
 
   @override
   void dispose() {
-    _webviewController.dispose();
+    if (_isWebViewControllerInitialized) {
+      _webviewController.dispose();
+    }
     super.dispose();
   }
 
@@ -240,7 +242,10 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
           },
           ignoreAllGestures: false,
           width: width,
-          onWebViewCreated: (controller) => _webviewController = controller,
+          onWebViewCreated: (controller) {
+            _webviewController = controller;
+            _isWebViewControllerInitialized = true;
+          },
           onPageFinished: (src) {
             Future.delayed(const Duration(milliseconds: 100)).then((value) {
               _editorLoaded = true;
@@ -249,8 +254,10 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
                 setState(() {});
               }
               widget.controller.enableEditor(isEnabled);
-              if (widget.text != null) {
-                _setHtmlTextToEditor(htmlText: widget.text!);
+              final initialTextToApply = _pendingHtmlText ?? widget.text;
+              if (initialTextToApply != null) {
+                _setHtmlTextToEditor(htmlText: initialTextToApply);
+                _pendingHtmlText = null;
               }
               if (widget.autoFocus == true) {
                 widget.controller.focus();
@@ -462,6 +469,10 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
 
   /// a private method to set the Html text to the editor
   Future _setHtmlTextToEditor({required String htmlText}) async {
+    if (!_isWebViewControllerInitialized || !_editorLoaded) {
+      _pendingHtmlText = htmlText;
+      return;
+    }
     return await _webviewController.callJsMethod("setHtmlText", [htmlText]);
   }
 
@@ -562,7 +573,6 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
    <!DOCTYPE html>
         <html>
         <head>
-        <link href="https://fonts.googleapis.com/css?family=$_encodedStyle:400,400i,700,700i" rel="stylesheet">
         <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1">    
         
        <!-- Include the Quill library --> 
@@ -858,23 +868,41 @@ class QuillHtmlEditorState extends State<QuillHtmlEditor> {
                 editor.applyGoogleKeyboardWorkaround = true
                 editor.on('editor-change', function(eventName, ...args) {
                   try {
-                    // args[0] will be delta
-                    var ops = args[0]['ops']
-                    if(ops === null) {
+                    // args[0] is delta for text changes; it can be undefined for selection-only changes.
+                    var delta = args && args.length > 0 ? args[0] : null
+                    var ops = delta && delta['ops'] ? delta['ops'] : null
+                    if(!ops || !Array.isArray(ops) || ops.length < 2) {
                       return
                     }
                     var oldSelection = editor.getSelection(true)
+                    if(!oldSelection) {
+                      return
+                    }
                     var oldPos = oldSelection.index
                     var oldSelectionLength = oldSelection.length
-                    if( ops[0]["retain"] === undefined || !ops[1] || !ops[1]["insert"] || !ops[1]["insert"] || ops[1]["list"] === "bullet" || ops[1]["list"] === "ordered" || ops[1]["insert"] != "\\n" || oldSelectionLength > 0) {
+                    var insertedOp = ops[1]
+                    var insertedAttributes = insertedOp["attributes"] || {}
+                    if(
+                      ops[0]["retain"] === undefined ||
+                      !insertedOp ||
+                      !insertedOp["insert"] ||
+                      insertedAttributes["list"] === "bullet" ||
+                      insertedAttributes["list"] === "ordered" ||
+                      insertedOp["insert"] != "\\n" ||
+                      oldSelectionLength > 0
+                    ) {
                       return
                     }
                     
                     setTimeout(function() {
-                      var newPos = editor.getSelection(true).index
+                      var currentSelection = editor.getSelection(true)
+                      if(!currentSelection) {
+                        return
+                      }
+                      var newPos = currentSelection.index
                       if(newPos === oldPos) {
                       console.log('newPos oldPos');
-                        editor.setSelection(editor.getSelection(true).index + 1, 0)
+                        editor.setSelection(currentSelection.index + 1, 0)
                       }
                     }, 30);
                     //onRangeChanged();
